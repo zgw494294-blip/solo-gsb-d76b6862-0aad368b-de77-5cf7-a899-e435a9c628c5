@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>离线测距定位</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="page-header">
+    <h1>离线测距定位</h1>
+    <p>录入坐标上界与信标距离区间，网格整数点上按欧氏距离求解；全部读数无交点时，逐个排除读数给出假设区域。</p>
+  </header>
+
+  <main class="layout">
+    <!-- 左：录入面板 -->
+    <section class="card form-card" aria-label="数据录入">
+      <h2>数据录入</h2>
+
+      <div class="field n-field">
+        <label for="input-n">坐标上界 N（范围 2～40，网格为 0～N 的整数点）</label>
+        <input id="input-n" name="n" type="number" min="2" max="40" step="1" value="10">
+        <p class="field-error" data-error="n" hidden></p>
+      </div>
+
+      <div class="beacon-head" aria-hidden="true">
+        <span>信标 ID</span><span>x</span><span>y</span><span>距离下界</span><span>距离上界</span><span></span>
+      </div>
+      <div id="beacon-rows"></div>
+      <p class="field-error" data-error="beacons" hidden></p>
+
+      <div class="form-actions">
+        <button type="button" id="btn-add" class="btn-secondary">+ 添加信标</button>
+        <span class="hint">信标 3～8 个；距离为非负整数闭区间，边界也算符合</span>
+      </div>
+
+      <div id="error-summary" class="error-summary" hidden>
+        <strong>输入有误，已停止计算：</strong>
+        <ul></ul>
+      </div>
+    </section>
+
+    <!-- 右：结果面板 -->
+    <section class="card result-card" aria-label="定位结果">
+      <div id="status-banner" class="banner banner-info">正在计算…</div>
+
+      <div id="hyp-bar" class="hyp-bar"></div>
+
+      <div id="board-scroll" class="board-scroll" inert>
+        <div id="board" class="board"></div>
+        <div id="stale-overlay" class="stale-overlay" hidden>
+          <div>读数已修改，旧结果已失效<br>正在重新计算…</div>
+        </div>
+      </div>
+
+      <div id="legend" class="legend"></div>
+      <p class="footnote">距离度量：欧氏距离，d² = (x−xᵦ)² + (y−yᵦ)²；区域按四邻接（上/下/左/右）划分。</p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
