@@ -2,10 +2,14 @@ import unittest
 
 from app.locating import (
     allowed_points,
+    build_suggestion,
+    candidate_sites,
+    hypothesis_points,
     solve,
     split_regions,
     to_int,
     validate_payload,
+    validate_suggest_payload,
 )
 
 
@@ -205,6 +209,201 @@ class TestSolve(unittest.TestCase):
         for h in result['hypotheses']:
             total = sum(len(r) for r in h['regions'])
             self.assertEqual(total, h['pointCount'])
+
+
+def all_cases(result):
+    """求解结果中的全部情形：(假设下标, (x, y))，同点多假设各算一种。"""
+    cases = []
+    for hi, hypothesis in enumerate(result['hypotheses']):
+        for region in hypothesis['regions']:
+            for point in region:
+                cases.append((hi, (point['x'], point['y'])))
+    return cases
+
+
+def brute_force_worst(cases, px, py):
+    buckets = {}
+    for _, (tx, ty) in cases:
+        reading = (tx - px) ** 2 + (ty - py) ** 2
+        buckets[reading] = buckets.get(reading, 0) + 1
+    return max(buckets.values())
+
+
+class TestSuggestValidation(unittest.TestCase):
+    def test_ok(self):
+        payload = {'n': 10, 'originX': 2, 'originY': '3', 'maxSteps': 4,
+                   'beacons': [
+                       beacon('A', 0, 0, 0, 0),
+                       beacon('B', 10, 10, 0, 30),
+                       beacon('C', 5, 5, 1, 2),
+                   ]}
+        n, beacons, origin, max_steps, errors = validate_suggest_payload(payload)
+        self.assertEqual(errors, {})
+        self.assertEqual((n, origin, max_steps), (10, (2, 3), 4))
+
+    def test_bad_origin_and_steps(self):
+        payload = {'n': 5, 'originX': 6, 'originY': -1, 'maxSteps': -1,
+                   'beacons': [
+                       beacon('A', 0, 0, 0, 0),
+                       beacon('B', 1, 0, 0, 0),
+                       beacon('C', 2, 0, 0, 0),
+                   ]}
+        _, _, _, _, errors = validate_suggest_payload(payload)
+        self.assertIn('originX', errors)
+        self.assertIn('originY', errors)
+        self.assertIn('maxSteps', errors)
+
+    def test_beacon_errors_propagate(self):
+        payload = {'n': 5, 'originX': 0, 'originY': 0, 'maxSteps': 1,
+                   'beacons': [beacon('A', 0, 0, 0, 0)]}
+        _, _, _, _, errors = validate_suggest_payload(payload)
+        self.assertIn('beacons', errors)
+
+
+class TestCandidateSites(unittest.TestCase):
+    def test_diamond_and_beacon_exclusion(self):
+        beacons = [beacon('A', 2, 2, 0, 0), beacon('B', 1, 2, 0, 0)]
+        sites = list(candidate_sites(5, beacons, (2, 2), 1))
+        # 距 (2,2) 曼哈顿不超过 1 的 5 个格点，去掉 2 个信标点
+        self.assertEqual(sorted(sites), [(2, 1), (2, 3), (3, 2)])
+
+    def test_clipped_by_grid(self):
+        sites = set(candidate_sites(3, [], (0, 0), 10))
+        self.assertEqual(sites, {(x, y) for x in range(4) for y in range(4)})
+
+    def test_zero_steps_on_beacon_means_no_site(self):
+        beacons = [beacon('A', 1, 1, 0, 0)]
+        self.assertEqual(list(candidate_sites(3, beacons, (1, 1), 0)), [])
+
+
+class TestSuggest(unittest.TestCase):
+    def test_already_unique(self):
+        result = build_suggestion(10, [
+            beacon('A', 0, 0, 5, 5),
+            beacon('B', 10, 0, 5, 5),
+            beacon('C', 5, 3, 3, 3),
+        ], (5, 0), 3)
+        self.assertEqual(result['status'], 'already_unique')
+        self.assertEqual(result['totalCases'], 1)
+        self.assertNotIn('recommendation', result)
+
+    def test_unlocatable(self):
+        result = build_suggestion(6, [
+            beacon('A', 0, 0, 0, 0),
+            beacon('B', 6, 0, 0, 0),
+            beacon('C', 6, 6, 0, 0),
+        ], (0, 0), 3)
+        self.assertEqual(result['status'], 'unlocatable')
+
+    def test_no_site(self):
+        # 起点压在信标上、步数为 0：唯一格点已被占用
+        result = build_suggestion(10, [
+            beacon('A', 2, 2, 3, 5),
+            beacon('B', 8, 1, 4, 6),
+            beacon('C', 6, 8, 3, 5),
+        ], (2, 2), 0)
+        self.assertEqual(result['status'], 'no_site')
+        self.assertIn('reason', result)
+
+    def test_recommendation_is_minimax(self):
+        beacons = [
+            beacon('A', 2, 2, 1, 4),
+            beacon('B', 8, 3, 2, 5),
+            beacon('C', 5, 9, 1, 5),
+        ]
+        origin, max_steps = (5, 5), 3
+        result = build_suggestion(10, beacons, origin, max_steps)
+        self.assertEqual(result['status'], 'recommended')
+
+        cases = all_cases(solve(10, beacons))
+        occupied = {(b['x'], b['y']) for b in beacons}
+        feasible = [
+            (x, y) for x in range(11) for y in range(11)
+            if abs(x - origin[0]) + abs(y - origin[1]) <= max_steps
+            and (x, y) not in occupied
+        ]
+        self.assertEqual(result['candidateCount'], len(feasible))
+
+        # 逐一暴力核对：推荐点的最坏组数等于全局最小值
+        expected_worst = min(brute_force_worst(cases, x, y) for x, y in feasible)
+        rec = result['recommendation']
+        self.assertEqual(rec['worstCases'], expected_worst)
+        self.assertEqual(brute_force_worst(cases, rec['x'], rec['y']), expected_worst)
+
+    def test_tie_break_steps_then_y_then_x(self):
+        # 两个互斥假设各只有一个候选点：(0,0) 与 (5,0)。
+        # 到两点距离平方不同的布点最坏组数都是 1，应选步数最少、再 y、x 最小者。
+        beacons = [
+            beacon('A', 0, 0, 0, 0),
+            beacon('B', 5, 0, 0, 0),
+            beacon('C', 0, 5, 0, 10),
+        ]
+        origin, max_steps = (2, 0), 2
+        result = build_suggestion(10, beacons, origin, max_steps)
+        rec = result['recommendation']
+        occupied = {(b['x'], b['y']) for b in beacons}
+        feasible = [
+            (x, y) for x in range(11) for y in range(11)
+            if abs(x - origin[0]) + abs(y - origin[1]) <= max_steps
+            and (x, y) not in occupied
+        ]
+        cases = all_cases(solve(10, beacons))
+        optimal = {
+            (x, y) for x, y in feasible
+            if brute_force_worst(cases, x, y) == 1
+        }
+        expected = min(optimal,
+                       key=lambda p: (abs(p[0] - origin[0]) + abs(p[1] - origin[1]),
+                                      p[1], p[0]))
+        self.assertEqual((rec['x'], rec['y']), expected)
+        self.assertEqual(rec['steps'],
+                         abs(rec['x'] - origin[0]) + abs(rec['y'] - origin[1]))
+
+    def test_reading_groups_partition_cases(self):
+        beacons = [
+            beacon('A', 2, 2, 1, 4),
+            beacon('B', 8, 3, 2, 5),
+            beacon('C', 5, 9, 1, 5),
+        ]
+        result = build_suggestion(10, beacons, (5, 5), 3)
+        rec = result['recommendation']
+
+        grouped = sum(group['caseCount'] for group in rec['readings'])
+        self.assertEqual(grouped, result['totalCases'])
+        for group in rec['readings']:
+            member_points = sum(len(m['points']) for m in group['members'])
+            self.assertEqual(member_points, group['caseCount'])
+            px, py = rec['x'], rec['y']
+            for member in group['members']:
+                for point in member['points']:
+                    self.assertEqual(
+                        (point['x'] - px) ** 2 + (point['y'] - py) ** 2,
+                        group['reading'],
+                    )
+
+    def test_cases_are_disjoint_hypothesis_points(self):
+        # 结构性质：全部读数无交点时，任意两个“排除一条读数”假设不可能
+        # 共享候选点（共享点会同时满足全部读数，与前提矛盾）。因此
+        # totalCases 恰为各假设候选点数之和，每个读数组只可能含唯一假设。
+        beacons = [
+            beacon('A', 0, 0, 0, 0),
+            beacon('B', 5, 0, 0, 0),
+            beacon('C', 0, 5, 0, 10),
+        ]
+        result = build_suggestion(10, beacons, (2, 0), 2)
+        solved = solve(10, beacons)
+        self.assertEqual(solved['status'], 'ambiguous_excluded')
+        self.assertEqual(
+            result['totalCases'],
+            sum(h['pointCount'] for h in solved['hypotheses']),
+        )
+        seen = set()
+        for hi, hypothesis in enumerate(solved['hypotheses']):
+            for point in hypothesis_points(hypothesis):
+                self.assertNotIn(point, seen)
+                seen.add(point)
+        for group in result['recommendation']['readings']:
+            self.assertEqual(len(group['members']), 1)
 
 
 if __name__ == '__main__':

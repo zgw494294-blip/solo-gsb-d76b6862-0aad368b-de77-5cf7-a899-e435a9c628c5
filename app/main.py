@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .locating import solve, validate_payload
+from .locating import build_suggestion, solve, validate_payload, validate_suggest_payload
 
 app = FastAPI(title='离线测距定位', version='1.0.0')
 
@@ -33,6 +33,23 @@ async def locate(request: Request):
         return JSONResponse(status_code=422, content={'detail': errors})
 
     return JSONResponse(solve(n, beacons))
+
+
+@app.post('/api/suggest')
+async def suggest(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=422,
+            content={'detail': {'_': '请求体不是有效的 JSON'}},
+        )
+
+    n, beacons, origin, max_steps, errors = validate_suggest_payload(payload)
+    if errors:
+        return JSONResponse(status_code=422, content={'detail': errors})
+
+    return JSONResponse(build_suggestion(n, beacons, origin, max_steps))
 
 
 @app.get('/')

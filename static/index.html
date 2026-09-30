@@ -55,6 +55,30 @@
 
       <div id="legend" class="legend"></div>
       <p class="footnote">距离度量：欧氏距离，d² = (x−xᵦ)² + (y−yᵦ)²；区域按四邻接（上/下/左/右）划分。</p>
+
+      <section id="suggest-panel" class="suggest-panel" aria-label="复测布点建议">
+        <h2>复测布点建议</h2>
+        <div class="suggest-inputs">
+          <div class="field suggest-field">
+            <label for="input-ox">当前格点 x</label>
+            <input id="input-ox" name="originX" type="number" min="0" step="1" value="5">
+          </div>
+          <div class="field suggest-field">
+            <label for="input-oy">当前格点 y</label>
+            <input id="input-oy" name="originY" type="number" min="0" step="1" value="5">
+          </div>
+          <div class="field suggest-field">
+            <label for="input-steps">最多可走步数（曼哈顿距离）</label>
+            <input id="input-steps" name="maxSteps" type="number" min="0" step="1" value="3">
+          </div>
+        </div>
+        <p class="field-error" data-suggest-error="originX" hidden></p>
+        <p class="field-error" data-suggest-error="originY" hidden></p>
+        <p class="field-error" data-suggest-error="maxSteps" hidden></p>
+        <div id="suggest-result" class="suggest-result">
+          <p class="suggest-hint">在可达的、未放置信标的网格点中，推荐能把“最坏剩余情形数”降到最低的复测位置。</p>
+        </div>
+      </section>
     </section>
   </main>
 

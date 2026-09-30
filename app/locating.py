@@ -14,6 +14,7 @@ MIN_N = 2
 MAX_N = 40
 MIN_BEACONS = 3
 MAX_BEACONS = 8
+MAX_STEPS = 200
 
 
 def to_int(value):
@@ -121,6 +122,41 @@ def validate_payload(payload):
     return (n if not errors else None), (beacons if not errors else None), errors
 
 
+def validate_suggest_payload(payload):
+    """校验复测布点请求体。
+
+    复用定位请求的 n / beacons 校验，额外校验当前所在整数格点
+    (originX, originY) 与可走步数 maxSteps。返回 (n, beacons, origin,
+    max_steps, errors)。"""
+    n, beacons, errors = validate_payload(payload)
+
+    if not isinstance(payload, dict):
+        return None, None, None, None, errors
+
+    origin = [None, None]
+    for axis, key in (('x', 'originX'), ('y', 'originY')):
+        value = to_int(payload.get(key))
+        label = '起点 x' if axis == 'x' else '起点 y'
+        if value is None:
+            errors[key] = f'{label} 必须是整数'
+        elif n is not None and not (0 <= value <= n):
+            errors[key] = f'{label} 越界，必须在 0～{n} 之间'
+        else:
+            origin[0 if axis == 'x' else 1] = value
+
+    max_steps = to_int(payload.get('maxSteps'))
+    if max_steps is None:
+        errors['maxSteps'] = '可走步数必须是非负整数'
+    elif max_steps < 0:
+        errors['maxSteps'] = '可走步数不能为负'
+    elif max_steps > MAX_STEPS:
+        errors['maxSteps'] = f'可走步数不能超过 {MAX_STEPS}'
+
+    if errors:
+        return None, None, None, None, errors
+    return n, beacons, tuple(origin), max_steps, errors
+
+
 def allowed_points(beacons, n):
     """枚举网格中同时满足给定信标全部距离区间的整数点。"""
     points = []
@@ -202,3 +238,125 @@ def solve(n, beacons):
         'beacons': beacons,
         'hypotheses': hypotheses,
     }
+
+
+def hypothesis_points(hypothesis):
+    """展平一个假设的各区域，返回其全部候选点 (x, y)。"""
+    return [
+        (point['x'], point['y'])
+        for region in hypothesis['regions']
+        for point in region
+    ]
+
+
+def candidate_sites(n, beacons, origin, max_steps):
+    """枚举可达且未放置信标的网格点：曼哈顿距离不超过 max_steps。
+
+    按 (y, x) 升序生成，后续并列选择时天然满足 y、x 的次序要求。"""
+    ox, oy = origin
+    occupied = {(b['x'], b['y']) for b in beacons}
+    for y in range(max(0, oy - max_steps), min(n, oy + max_steps) + 1):
+        remain = max_steps - abs(y - oy)
+        for x in range(max(0, ox - remain), min(n, ox + remain) + 1):
+            if (x, y) not in occupied:
+                yield x, y
+
+
+def build_suggestion(n, beacons, origin, max_steps):
+    """基于 solve 的结果推荐一个复测布点。
+
+    把求解器每个成立假设的每个候选点都视为一种“目标真实位置”情形；
+    复测在候选点 (px,py) 处精确给出 d²=(x−px)²+(y−py)²，同一读数对应的
+    情形无法区分，构成一个读数分组。优先使最大分组最小，并列时选曼哈顿
+    步数最少，再按 y、x 升序。"""
+    result = solve(n, beacons)
+    status = result['status']
+    hypotheses = result['hypotheses']
+
+    base = {
+        'n': n,
+        'beacons': beacons,
+        'originX': origin[0],
+        'originY': origin[1],
+        'maxSteps': max_steps,
+        'locateStatus': status,
+        'hypotheses': hypotheses,
+    }
+
+    if status == 'unlocatable':
+        return dict(base, status='unlocatable', reason=(
+            '现有读数下不存在任何成立的假设（全部读数及其任一排他组合都没有 '
+            '共同允许的网格点），没有可供复测区分的情形。请先检查读数是否录入有误。'
+        ))
+
+    # 坐标 -> 覆盖该点的假设下标（同一坐标可被多个假设同时允许，算多种情形）
+    multiplicity = {}
+    for hi, hypothesis in enumerate(hypotheses):
+        for point in hypothesis_points(hypothesis):
+            multiplicity.setdefault(point, []).append(hi)
+
+    total_cases = sum(len(his) for his in multiplicity.values())
+
+    if status == 'located' and total_cases <= 1:
+        return dict(base, status='already_unique', totalCases=total_cases, reason=(
+            '全部读数一致且候选点只有 1 个，目标位置已唯一确定，无需复测。'
+        ))
+
+    ox, oy = origin
+    sites = list(candidate_sites(n, beacons, origin, max_steps))
+    if not sites:
+        return dict(base, status='no_site', totalCases=total_cases, reason=(
+            f'从当前格点 ({ox},{oy}) 出发、曼哈顿距离不超过 {max_steps} 步的'
+            '可达网格点均已放置信标，没有可用的复测布点。'
+            '请增大可走步数，或把起点移到未放信标的格点。'
+        ))
+
+    best = None  # (最大组大小, 步数, y, x)
+    best_buckets = None
+    for px, py in sites:
+        buckets = {}
+        for (tx, ty), his in multiplicity.items():
+            reading = (tx - px) ** 2 + (ty - py) ** 2
+            buckets.setdefault(reading, 0)
+            buckets[reading] += len(his)
+        worst = max(buckets.values())
+        key = (worst, abs(px - ox) + abs(py - oy), py, px)
+        if best is None or key < best:
+            best = key
+            best_buckets = buckets
+
+    worst, steps, py, px = best
+
+    # 重新整理推荐点的读数分组详情：读数 -> [{hypothesis, points}]
+    groups = {}
+    for hi, hypothesis in enumerate(hypotheses):
+        for tx, ty in hypothesis_points(hypothesis):
+            reading = (tx - px) ** 2 + (ty - py) ** 2
+            groups.setdefault(reading, {}).setdefault(hi, []).append((tx, ty))
+
+    readings = []
+    for reading in sorted(groups):
+        members = []
+        for hi in sorted(groups[reading]):
+            pts = sorted(groups[reading][hi], key=lambda p: (-p[1], p[0]))
+            members.append({
+                'hypothesisIndex': hi,
+                'excludedIndex': hypotheses[hi]['excludedIndex'],
+                'excludedId': hypotheses[hi]['excludedId'],
+                'points': [{'x': x, 'y': y} for x, y in pts],
+            })
+        readings.append({
+            'reading': reading,
+            'caseCount': sum(len(m['points']) for m in members),
+            'members': members,
+        })
+
+    return dict(base, status='recommended', totalCases=total_cases,
+                candidateCount=len(sites), recommendation={
+                    'x': px,
+                    'y': py,
+                    'steps': steps,
+                    'worstCases': worst,
+                    'readingCount': len(readings),
+                    'readings': readings,
+                })

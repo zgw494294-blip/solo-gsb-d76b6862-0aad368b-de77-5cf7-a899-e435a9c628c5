@@ -423,3 +423,132 @@ details.region-details .point-list {
   max-height: 140px;
   overflow: auto;
 }
+
+/* ---------- 复测布点建议 ---------- */
+
+.suggest-panel {
+  margin-top: 14px;
+  border-top: 1px dashed var(--line);
+  padding-top: 14px;
+}
+
+.suggest-panel h2 { margin-bottom: 10px; }
+
+.suggest-inputs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.suggest-field label {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.suggest-result { margin-top: 10px; }
+
+.suggest-hint,
+.suggest-empty,
+.suggest-reason {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.suggest-state {
+  margin: 0 0 4px;
+  font-size: 13.5px;
+}
+
+.suggest-already_unique { color: var(--ok-ink); }
+.suggest-unlocatable,
+.suggest-no_site { color: var(--warn-ink); }
+
+.suggest-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: baseline;
+  font-size: 13.5px;
+}
+
+.suggest-pos b { color: var(--accent); font-size: 15px; }
+.suggest-meta { color: var(--ink-soft); font-size: 12.5px; }
+
+.suggest-summary {
+  margin: 6px 0 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.reading-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reading-group {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 10px;
+  background: #fbfcfe;
+  font-size: 12.5px;
+}
+
+.reading-group summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
+.reading-value { font-weight: 700; color: var(--ink); }
+.reading-dist { color: var(--ink-soft); font-size: 11.5px; }
+.reading-count {
+  margin-left: auto;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.reading-members {
+  margin: 4px 0 0;
+  padding-left: 14px;
+  color: var(--ink-soft);
+}
+
+.reading-members .member-hyp { font-weight: 600; color: var(--ink); }
+.reading-members .member-points {
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.suggest-marker {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.suggest-origin {
+  width: 12px;
+  height: 12px;
+  border: 2px dashed var(--accent);
+  border-radius: 3px;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.suggest-rec {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1.5px var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}

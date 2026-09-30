@@ -17,6 +17,9 @@ const state = {
   focus: null,       // 聚焦查看的假设下标；null 表示全部叠加
   reqSeq: 0,
   timer: null,
+  suggestion: null,  // 最近一次复测布点建议；输入变更后立即置空撤销
+  suggestSeq: 0,
+  suggestTimer: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -156,13 +159,17 @@ function errorTargetName(key) {
 
 function markStale() {
   state.focus = null;
+  invalidateSuggestion(); // 读数改变：撤销旧复测建议
   if (state.result) $('#stale-overlay').hidden = false;
 }
 
 function scheduleCompute() {
   markStale();
+  clearSuggestErrors();
+  renderSuggest();
+  drawSuggestionMarker();
   clearTimeout(state.timer);
-  state.timer = setTimeout(compute, 300);
+  state.timer = setTimeout(() => { compute(); scheduleSuggest(); }, 300);
 }
 
 async function compute() {
@@ -201,6 +208,205 @@ async function compute() {
   state.focus = null;
   $('#stale-overlay').hidden = true;
   renderResult();
+}
+
+/* ---------------- 复测布点建议 ---------------- */
+
+const SUGGEST_FIELDS = {
+  originX: { input: 'input-ox' },
+  originY: { input: 'input-oy' },
+  maxSteps: { input: 'input-steps' },
+};
+
+function clearSuggestErrors() {
+  Object.values(SUGGEST_FIELDS).forEach(({ input }) => {
+    document.getElementById(input).classList.remove('invalid');
+  });
+  document.querySelectorAll('[data-suggest-error]').forEach((p) => {
+    p.hidden = true;
+    p.textContent = '';
+  });
+}
+
+function invalidateSuggestion() {
+  // 读数、起点或步数改变：立即撤销旧建议，使在途响应无法重新显示
+  state.suggestion = null;
+  state.suggestSeq += 1;
+  clearTimeout(state.suggestTimer);
+}
+
+function scheduleSuggest() {
+  invalidateSuggestion();
+  renderSuggest();          // 先撤掉旧建议面板内容
+  drawSuggestionMarker();   // 以及网格上的旧推荐标记
+  state.suggestTimer = setTimeout(computeSuggest, 300);
+}
+
+function collectSuggestPayload() {
+  return {
+    ...collectPayload(),
+    originX: $('#input-ox').value,
+    originY: $('#input-oy').value,
+    maxSteps: $('#input-steps').value,
+  };
+}
+
+async function computeSuggest() {
+  const seq = ++state.suggestSeq;
+  const payload = collectSuggestPayload();
+
+  let data;
+  try {
+    const resp = await fetch('/api/suggest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    data = await resp.json();
+    if (!resp.ok) throw { status: resp.status, body: data };
+  } catch (err) {
+    if (seq !== state.suggestSeq) return; // 已有更新的输入，丢弃过期响应
+    clearSuggestErrors();
+    if (err && err.status === 422 && err.body && err.body.detail) {
+      const detail = err.body.detail;
+      let handled = false;
+      Object.keys(SUGGEST_FIELDS).forEach((key) => {
+        if (detail[key]) {
+          handled = true;
+          document.getElementById(SUGGEST_FIELDS[key].input).classList.add('invalid');
+          const p = document.querySelector(`[data-suggest-error="${key}"]`);
+          p.textContent = detail[key];
+          p.hidden = false;
+        }
+      });
+      if (!handled) {
+        // n / 信标读数本身不合法时，定位面板会逐字段报错，这里只给一句说明
+        renderSuggestMessage('请先修正左侧定位读数中的错误，再计算复测布点。');
+      }
+    } else {
+      renderSuggestMessage('复测建议请求失败，请确认服务正在运行后修改任意输入重试。');
+    }
+    return;
+  }
+
+  if (seq !== state.suggestSeq) return; // 在途响应不得重新显示已被撤销的建议
+  clearSuggestErrors();
+  state.suggestion = data;
+  renderSuggest();
+  drawSuggestionMarker();
+}
+
+function renderSuggestMessage(message) {
+  const box = $('#suggest-result');
+  box.replaceChildren();
+  box.appendChild(el('p', 'suggest-empty', message));
+}
+
+function suggestHypLabel(member) {
+  if (member.excludedIndex === null || member.excludedIndex === undefined) {
+    return '假设 H0：全部读数一致';
+  }
+  return `假设 H${member.excludedIndex + 1}：排除信标「${escapeHtml(member.excludedId)}」`;
+}
+
+function renderSuggest() {
+  const box = $('#suggest-result');
+  box.replaceChildren();
+  const sug = state.suggestion;
+
+  if (!sug) {
+    box.appendChild(el('p', 'suggest-hint',
+      '在可达的、未放置信标的网格点中，推荐能把“最坏剩余情形数”降到最低的复测位置。'));
+    return;
+  }
+
+  if (sug.status !== 'recommended') {
+    const titles = {
+      already_unique: '已唯一定位，无需复测',
+      unlocatable: '无法定位，暂无可复测的情形',
+      no_site: '可达范围内没有可用布点',
+    };
+    const head = el('p', `suggest-state suggest-${sug.status}`);
+    head.innerHTML = `<strong>${escapeHtml(titles[sug.status] || '暂无复测建议')}。</strong>`;
+    box.appendChild(head);
+    box.appendChild(el('p', 'suggest-reason', sug.reason || ''));
+    return;
+  }
+
+  const rec = sug.recommendation;
+  const head = el('div', 'suggest-head');
+  head.innerHTML =
+    `<span class="suggest-pos">推荐复测位置：<b>(${rec.x}, ${rec.y})</b></span>` +
+    `<span class="suggest-meta">从当前格点 (${sug.originX},${sug.originY}) 出发需走 <b>${rec.steps}</b> 步` +
+    `（曼哈顿距离，上限 ${sug.maxSteps}）</span>`;
+  box.appendChild(head);
+
+  const summary = el('p', 'suggest-summary');
+  const remaining = rec.worstCases <= 1
+    ? '<b>1</b>（读数即可唯一确定目标）'
+    : `<b>${rec.worstCases}</b> 种情形`;
+  summary.innerHTML =
+    `现有 <b>${sug.totalCases}</b> 种“假设 × 候选点”情形，已检查可达的 ` +
+    `<b>${sug.candidateCount}</b> 个未放信标网格点；该布点在最坏读数下仍剩 ${remaining}，` +
+    `可能读到 ${rec.readingCount} 种不同的距离平方值。` +
+    `复测假定精确给出到目标距离的平方（整数）。`;
+  box.appendChild(summary);
+
+  const list = el('div', 'reading-list');
+  rec.readings.forEach((group) => {
+    const row = el('details', 'reading-group');
+    const summaryEl = el('summary', null);
+    const d = Math.sqrt(group.reading);
+    const distText = Number.isInteger(d) ? `（距离恰为 ${d}）` : '';
+    summaryEl.innerHTML = `<span class="reading-value">读数 d² = ${group.reading}</span>` +
+      `<span class="reading-dist">${distText}</span>` +
+      `<span class="reading-count">剩余 ${group.caseCount} 种情形</span>`;
+    row.appendChild(summaryEl);
+
+    group.members.forEach((member) => {
+      const p = el('p', 'reading-members');
+      p.innerHTML = `<span class="member-hyp">${suggestHypLabel(member)}：</span>` +
+        `<span class="member-points">${member.points
+          .map((pt) => `(${pt.x},${pt.y})`).join('，')}</span>`;
+      row.appendChild(p);
+    });
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+}
+
+function putMarker(cell, marker) {
+  // 信标标记最后追加（z-index 更高）；复测标记插到其前面，避免遮挡信标
+  const beacon = cell.querySelector('.beacon');
+  cell.insertBefore(marker, beacon);
+}
+
+function drawSuggestionMarker() {
+  // 重绘前清掉旧的复测标记（读数/起点/步数改变时即随之一并撤销）
+  document.querySelectorAll('.suggest-marker').forEach((node) => node.remove());
+  const cellEls = state.cellEls;
+  if (!cellEls) return;
+  const sug = state.suggestion;
+
+  if (sug) {
+    const oc = cellEls[keyOf(sug.originX, sug.originY)];
+    if (oc) {
+      const marker = el('div', 'suggest-marker suggest-origin');
+      marker.title = `当前格点 (${sug.originX},${sug.originY})` +
+        (sug.maxSteps != null ? `\n最多可走 ${sug.maxSteps} 步（曼哈顿距离）` : '');
+      putMarker(oc, marker);
+    }
+    if (sug.status === 'recommended') {
+      const rec = sug.recommendation;
+      const rc = cellEls[keyOf(rec.x, rec.y)];
+      if (rc) {
+        const marker = el('div', 'suggest-marker suggest-rec', '测');
+        marker.title = `推荐复测位置 (${rec.x},${rec.y})\n需走 ${rec.steps} 步` +
+          `\n最坏剩余情形数：${rec.worstCases}`;
+        putMarker(rc, marker);
+      }
+    }
+  }
 }
 
 /* ---------------- 状态条与假设条 ---------------- */
@@ -313,6 +519,7 @@ function renderHypBar() {
 function renderEmptyBoard() {
   const board = $('#board');
   board.replaceChildren();
+  state.cellEls = null;
   $('#legend').replaceChildren();
   $('#hyp-bar').replaceChildren();
   $('#board-scroll').setAttribute('inert', '');
@@ -338,6 +545,8 @@ function renderResult() {
   renderHypBar();
   renderBoard();
   renderLegend();
+  renderSuggest();
+  drawSuggestionMarker();
 }
 
 function renderBoard() {
@@ -377,6 +586,7 @@ function renderBoard() {
   board.appendChild(head);
 
   const cellEls = {};
+  state.cellEls = cellEls;
   for (let y = n; y >= 0; y--) {
     const row = el('div', 'grid-row');
     row.appendChild(el('span', 'axis-y', String(y)));
@@ -522,10 +732,16 @@ $('#beacon-rows').addEventListener('click', (e) => {
 });
 
 document.addEventListener('input', (e) => {
-  if (e.target.closest('#beacon-rows, #input-n')) scheduleCompute();
+  if (e.target.closest('#beacon-rows, #input-n')) {
+    scheduleCompute();
+  } else if (e.target.closest('#suggest-panel input')) {
+    scheduleSuggest(); // 起点/步数改变：撤销旧建议并重新推荐（不重算定位）
+  }
 });
 
 DEFAULT_BEACONS.forEach((b) => addBeaconRow(b));
 renderEmptyBoard();
+renderSuggest();
 setBanner('info', '正在计算…');
 compute();
+scheduleSuggest();
